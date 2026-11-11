@@ -61,10 +61,29 @@ supabase/migrations/0002_sincronizacion.sql   RPC atómica e idempotente para la
 - `next build` de producción OK.
 - Navegador con tamaño de celular (Playwright): inicio de Familia y de Negocio, cobro con vista previa, "Ya lo pasé" y carga sin señal, sin errores de consola.
 
-## Pendiente (siguiente iteración)
+## Fase 3b — App completa
 
-1. **Service Worker** (Serwist) para abrir la app sin señal. Hoy los *datos* funcionan offline, pero la primera carga de la página necesita conexión.
-2. **Login** (Supabase Auth con enlace por email) y alta del hogar; hoy solo está el modo demo.
-3. Pantallas diseñadas en la Fase 2 que todavía muestran "próximamente": Me deben, Sobres, Debemos, Carga rápida (＋) y Más.
-4. Edge Functions: cotización diaria del dólar y generación de las cuotas mensuales del pensionado.
-5. Cuando dos teléfonos reparten ingresos sin señal al mismo tiempo, el tope mensual de una regla se puede pasar. Habría que agregar un ajuste en el servidor al sincronizar.
+Agregado después del núcleo, para dejar la app usable de punta a punta:
+
+| Área | Qué hay |
+|---|---|
+| **Acceso** | Entrada con enlace por email (Supabase Auth). Crear hogar o sumarse con un **código de 6 letras** (migración `0003_acceso.sql`). Sin Supabase, la app funciona **solo en el teléfono**. |
+| **Configuración guiada** | 3 pasos: negocios, cuentas con saldos de hoy (la deuda de la tarjeta va a Debemos), y sueldo y costos. Con eso arma la cascada de prioridades, los sobres y el fondo de emergencia sugerido (3 meses). |
+| **Carga rápida (＋)** | Monto, qué fue y de dónde. Solo muestra sobres y cuentas del modo actual; la tarjeta compartida toma el ámbito del sobre; muestra el equivalente en pesos cuando la cuenta es en dólares. |
+| **Me deben** | Clientes agrupados por semáforo. Ficha con lo que debe mes a mes, cobro parcial (se aplica primero a lo más viejo; lo que sobra queda a favor), "¿va a pagar?" (seguro / quizás / difícil), incobrable, deudas sueltas (venta fiada, reserva) y WhatsApp. **Generar cuotas del mes** con id fijo por cliente y mes: no se duplica aunque los dos lo toquen sin señal. |
+| **Sobres** | Plata sin destino, reparto automático por prioridad (cubre primero los sobres en rojo y no pasa la meta del fondo de emergencia), agregar, sacar, mover y editar sobres. No deja asignar plata que no existe. |
+| **Debemos** | Avalancha o bola de nieve, deuda a atacar, registrar pagos (la cuota de la Hilux con la Visa va al resumen del Negocio) y simulador: meses e intereses con plata extra. Avisa si el mínimo no cubre el interés. |
+| **Cuentas y tarjetas** | Saldos, altas y archivado de cuentas. Resumen de cada tarjeta dividido por partes, y cada parte paga lo suyo. |
+| **Dólar** | Blue promedio automático una vez por día (con señal) o cargado a mano, y venta de dólares: los pesos del negocio pasan por el Embudo. |
+| **Sueldo** | Agregar, editar, pausar y borrar pasos de la cascada. |
+| **Sincronización** | Pendientes por subir y bandeja **Para revisar** (reintentar o descartar lo que el servidor rechazó). |
+| **Sin señal** | Service worker propio (`public/sw.js`): guarda todas las pantallas al instalarse; las páginas usan primero la red y, sin señal, la copia guardada. App instalable con íconos. |
+
+Guía para publicarla e instalarla: [puesta-en-marcha.md](puesta-en-marcha.md).
+
+## Limitaciones conocidas
+
+1. **Embudo con dos teléfonos sin señal**: si los dos registran cobros a la vez sin conexión, una regla puede pasarse de su tope mensual. Cada cobro se reparte una sola vez, pero el tope se controla con los datos de cada teléfono. Se corrige moviendo plata entre sobres.
+2. **Cotización automática**: usa `dolarapi.com` (mismos valores que dolarhoy.com). No se pudo probar desde el entorno de desarrollo porque la red lo bloquea; si falla, la app avisa y se carga a mano.
+3. **Acceso por email**: el código está hecho y las funciones SQL están probadas en Postgres, pero no hay un proyecto Supabase real para probar el envío del email y la vuelta a la app. Es lo primero a verificar al publicarla (ver la guía).
+4. **Editar ediciones simultáneas** (por ejemplo, los dos cambian el mismo sobre sin señal): gana el último en sincronizar.

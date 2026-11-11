@@ -1,5 +1,2 @@
-import { Proximamente } from "@/components/Proximamente";
-
-export default function Pagina() {
-  return <Proximamente titulo="Sobres del negocio" descripcion="Stock de alimento, nafta, Plan Hilux, impuestos y materiales de cabañas." />;
-}
+import { PantallaSobres } from "@/components/PantallaSobres";
+export default function Pagina() { return <PantallaSobres />; }

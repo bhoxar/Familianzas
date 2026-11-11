@@ -16,6 +16,9 @@ import { estadoEmbudoMes, repartirIngreso, resumenSueldo, type PasoReparto } fro
 import { saldoCuenta, saldosSobres, type Instantanea } from "@/lib/dominio/calculos";
 import { aCentavos, nombreMes, pesos } from "@/lib/dominio/utiles";
 import { BarraProgreso, Boton, Tarjeta } from "./ui";
+import { Campo, Hoja } from "./formulario";
+import { FormRegla } from "./FormRegla";
+import type { ReglaEmbudo } from "@/lib/dominio/tipos";
 
 type Aviso = { tipo: "ok" | "error"; texto: string } | null;
 
@@ -160,6 +163,8 @@ function PasarAFamilia({ s, paraTransferir, avisar }: { s: Instantanea; paraTran
 
 // ---------------------------------------------------------------------------
 function Cascada({ s, estado, avisar }: { s: Instantanea; estado: ReturnType<typeof estadoEmbudoMes>; avisar: (a: Aviso) => void }) {
+  const [editando, setEditando] = useState<Partial<ReglaEmbudo> | null>(null);
+  const inactivas = s.reglas.filter((r) => !r.activa && !r.eliminado_en);
   const mover = async (indice: number, delta: -1 | 1) => {
     const ids = estado.map((e) => e.regla.id);
     const j = indice + delta;
@@ -184,7 +189,7 @@ function Cascada({ s, estado, avisar }: { s: Instantanea; estado: ReturnType<typ
             <li key={regla.id} className={`rounded-xl border p-3 ${esSueldo ? "border-marca bg-marca-suave/50" : "border-borde"}`}>
               <div className="flex items-center gap-2">
                 <span className="grid size-7 shrink-0 place-items-center rounded-full bg-marca text-xs font-bold text-white">{i + 1}</span>
-                <span className="flex-1 font-semibold">{esSueldo ? "💰 " : ""}{regla.nombre}</span>
+                <button className="flex-1 text-left font-semibold" onClick={() => setEditando(regla)}>{esSueldo ? "💰 " : ""}{regla.nombre}</button>
                 <div className="flex flex-col">
                   <button aria-label={`Subir ${regla.nombre}`} disabled={i === 0} onClick={() => mover(i, -1)}
                     className="h-6 w-10 text-suave disabled:opacity-20">▲</button>
@@ -203,6 +208,17 @@ function Cascada({ s, estado, avisar }: { s: Instantanea; estado: ReturnType<typ
           );
         })}
       </ol>
+      {inactivas.length > 0 && (
+        <p className="mt-3 text-xs text-suave">
+          Pausados: {inactivas.map((r) => (
+            <button key={r.id} className="mr-2 underline" onClick={() => setEditando(r)}>{r.nombre}</button>
+          ))}
+        </p>
+      )}
+      <Boton variante="secundario" className="mt-3 w-full" onClick={() => setEditando({ destino: "sobre", activa: true })}>+ Agregar paso</Boton>
+      <Hoja abierta={!!editando} onCerrar={() => setEditando(null)} titulo={editando?.id ? "Editar paso" : "Nuevo paso"}>
+        {editando && <FormRegla s={s} inicial={editando} onListo={() => setEditando(null)} />}
+      </Hoja>
     </Tarjeta>
   );
 }
@@ -293,11 +309,3 @@ function describirReparto(pasos: PasoReparto[], sobrante: number): string {
   return `Se repartió: ${partes.join(" · ")}.`;
 }
 
-function Campo({ etiqueta, children }: { etiqueta: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-xs font-semibold text-suave">{etiqueta}</span>
-      {children}
-    </label>
-  );
-}

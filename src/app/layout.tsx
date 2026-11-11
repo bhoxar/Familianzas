@@ -6,6 +6,7 @@ export const metadata: Metadata = {
   title: "Familianzas",
   description: "Negocio y familia, cada peso en su lugar.",
   manifest: "/manifest.webmanifest",
+  icons: { icon: "/icono.svg", apple: "/apple-touch-icon.png" },
   appleWebApp: { capable: true, title: "Familianzas", statusBarStyle: "default" },
 };
 

@@ -9,7 +9,7 @@ import { crearTransferenciaSueldo, planificarIngreso } from "../dominio/embudo";
 import type {
   Cargo, Cuenta, Deudor, ReglaEmbudo, Sobre, Transaccion, UnidadNegocio, Asignacion, DeudaPropia,
 } from "../dominio/tipos";
-import { inicioDeMes, sumarDias } from "../dominio/utiles";
+import { idDeterminista, inicioDeMes, sumarDias } from "../dominio/utiles";
 
 export const HOGAR_DEMO = "00000000-0000-4000-8000-000000000001";
 const $ = (pesos: number) => Math.round(pesos * 100);
@@ -54,11 +54,11 @@ export function crearDemo(hoy: string): Instantanea {
     sobre({ id: "s-impuestos", nombre: "Impuestos", ambito: "empresa", tipo: "impuestos" }),
     sobre({ id: "s-materiales", nombre: "Materiales cabañas", ambito: "empresa", tipo: "costo_fijo", unidad_negocio_id: "u-cabanas" }),
     sobre({ id: "s-sueldo", nombre: "Sueldo por transferir", ambito: "empresa", tipo: "sueldo" }),
-    sobre({ id: "s-super", nombre: "Súper", ambito: "familia", tipo: "gasto_mensual", grupo: "Casa", prioridad: 10 }),
-    sobre({ id: "s-bebe", nombre: "Bebé (pañales y leche)", ambito: "familia", tipo: "gasto_mensual", grupo: "Hijos", prioridad: 1 }),
-    sobre({ id: "s-colegio", nombre: "Colegio", ambito: "familia", tipo: "gasto_mensual", grupo: "Hijos", prioridad: 5 }),
-    sobre({ id: "s-servicios", nombre: "Luz, gas e internet", ambito: "familia", tipo: "costo_fijo", grupo: "Casa", prioridad: 5 }),
-    sobre({ id: "s-emergencia", nombre: "Fondo de emergencia", ambito: "familia", tipo: "fondo_emergencia", meta_monto: $(1_800_000), prioridad: 50 }),
+    sobre({ id: "s-super", nombre: "Súper", ambito: "familia", tipo: "gasto_mensual", grupo: "Casa", prioridad: 10, meta_mensual: $(220_000) }),
+    sobre({ id: "s-bebe", nombre: "Bebé (pañales y leche)", ambito: "familia", tipo: "gasto_mensual", grupo: "Hijos", prioridad: 1, meta_mensual: $(110_000) }),
+    sobre({ id: "s-colegio", nombre: "Colegio", ambito: "familia", tipo: "gasto_mensual", grupo: "Hijos", prioridad: 5, meta_mensual: $(45_000) }),
+    sobre({ id: "s-servicios", nombre: "Luz, gas e internet", ambito: "familia", tipo: "costo_fijo", grupo: "Casa", prioridad: 5, meta_mensual: $(85_000) }),
+    sobre({ id: "s-emergencia", nombre: "Fondo de emergencia", ambito: "familia", tipo: "fondo_emergencia", meta_monto: $(1_800_000), meta_mensual: $(100_000), prioridad: 50, grupo: "Metas" }),
   ];
 
   // --- Reglas del Embudo (cascada) --------------------------------------
@@ -89,8 +89,9 @@ export function crearDemo(hoy: string): Instantanea {
   const cargos: Cargo[] = [];
   const cargo = (d: Deudor, periodo: string, vence: string, extra: Partial<Cargo> = {}): Cargo => {
     const c: Cargo = {
-      ...base, id: id("cg"), unidad_negocio_id: "u-pension", deudor_id: d.id,
-      concepto: `Pensión ${periodo.slice(0, 7)} · ${d.cantidad_unidades} caballo(s)`, periodo, moneda: "ARS",
+      // Mismo id que genera "Generar cuotas del mes": no se duplican.
+      ...base, id: idDeterminista("cuota", d.id, periodo), unidad_negocio_id: "u-pension", deudor_id: d.id,
+      concepto: `Cuota ${periodo.slice(0, 7)}${(d.cantidad_unidades ?? 1) > 1 ? ` · ${d.cantidad_unidades} unidades` : ""}`, periodo, moneda: "ARS",
       monto: (d.tarifa_mensual ?? 0) * (d.cantidad_unidades ?? 1), fecha_emision: periodo, fecha_vencimiento: vence,
       probabilidad_cobro: 100, estado: "pendiente", ...extra,
     };

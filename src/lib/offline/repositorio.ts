@@ -25,7 +25,7 @@ import { idDispositivo, TABLAS_SYNC, type FamilianzasDB, type TablaSync } from "
 
 export interface Cambio {
   tabla: TablaSync;
-  fila: { id?: string; hogar_id: string } & Record<string, unknown>;
+  fila: { id?: string; hogar_id?: string } & Record<string, unknown>;
 }
 
 /** Guarda filas + cola de salida en una sola transacción local. */

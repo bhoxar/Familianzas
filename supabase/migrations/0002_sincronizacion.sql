@@ -19,7 +19,7 @@ declare
   sets     text;
   pk       text;
   permitidas constant text[] := array[
-    'unidades_negocio','cuentas','sobres','asignaciones','deudores','cargos',
+    'hogares','unidades_negocio','cuentas','sobres','asignaciones','deudores','cargos',
     'deudas_propias','config_embudo','reglas_embudo','embudo_distribuciones',
     'transacciones','cobros_aplicados','cotizaciones'];
 begin

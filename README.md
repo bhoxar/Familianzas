@@ -10,6 +10,7 @@ npm test
 
 - [Fase 1 — Arquitectura y Base de Datos](docs/fase-1-arquitectura.md)
 - [Fase 2 — UI/UX y Navegación](docs/fase-2-ui-ux.md)
-- [Fase 3 — Desarrollo del Core](docs/fase-3-desarrollo.md)
+- [Fase 3 — Desarrollo del Core y app completa](docs/fase-3-desarrollo.md)
+- **[Puesta en marcha: publicar e instalar en los teléfonos](docs/puesta-en-marcha.md)**
 - Esquema: `supabase/migrations/`
 - Pruebas de reglas SQL: `psql -d <bd_vacia> -f supabase/tests/reglas_negocio.sql`

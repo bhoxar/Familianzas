@@ -105,6 +105,10 @@ export function sincronizar(base: FamilianzasDB): Promise<void> {
   if (typeof navigator !== "undefined" && !navigator.onLine) return Promise.resolve();
   enCurso ??= (async () => {
     try {
+      // La demo y los hogares sin vincular nunca se suben.
+      if ((await leerMeta(base, "modo_demo")) === "1" || !(await leerMeta(base, "hogar_id"))) return;
+      const { data } = await sb.auth.getSession();
+      if (!data.session) return;
       await subirPendientes(base, sb);
       await bajarCambios(base, sb);
     } finally {
@@ -136,4 +140,25 @@ export function iniciarSyncAutomatica(base: FamilianzasDB, cadaMs = 60_000): () 
     document.removeEventListener("visibilitychange", correr);
     window.clearInterval(intervalo);
   };
+}
+
+/**
+ * Descarta un lote rechazado por el servidor: lo saca de la cola, borra las
+ * filas locales que creó y fuerza a volver a bajar todo para recuperar la
+ * versión del servidor de lo que se haya editado.
+ */
+export async function descartarLote(base: FamilianzasDB, lote: string): Promise<void> {
+  const cambios = await base.outbox.where("lote").equals(lote).toArray();
+  await base.transaction("rw", [base.outbox, base.meta, ...cambios.map((c) => base.table(c.tabla))], async () => {
+    for (const c of cambios) await base.table(c.tabla).delete(c.clave);
+    await base.outbox.where("lote").equals(lote).delete();
+    await base.meta.where("clave").startsWith("cursor:").delete();
+  });
+  void sincronizar(base).catch(() => undefined);
+}
+
+/** Vuelve a intentar un lote rechazado (por ejemplo, después de corregir datos). */
+export async function reintentarLote(base: FamilianzasDB, lote: string): Promise<void> {
+  await base.outbox.where("lote").equals(lote).modify((c) => { c.error = null; });
+  void sincronizar(base).catch(() => undefined);
 }

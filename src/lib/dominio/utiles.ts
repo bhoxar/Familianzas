@@ -82,6 +82,26 @@ export const nombreMes = (fecha: Fecha) =>
 // Ids y marcas de tiempo
 // ---------------------------------------------------------------------------
 export const nuevoId = (): string => crypto.randomUUID();
+
+/**
+ * Id estable a partir de un texto (ej. "cuota|<deudor>|2026-11-01").
+ * Dos teléfonos que generan la misma cuota sin señal producen el MISMO id,
+ * así la sincronización no la duplica. Formato uuid válido para Postgres.
+ */
+export function idDeterminista(...partes: string[]): string {
+  const texto = partes.join("|");
+  // 4 hashes FNV-1a de 32 bits con distintas semillas => 128 bits
+  const h = [0x811c9dc5, 0x01000193, 0x9e3779b9, 0x85ebca6b].map((semilla) => {
+    let x = semilla >>> 0;
+    for (let i = 0; i < texto.length; i++) {
+      x ^= texto.charCodeAt(i);
+      x = Math.imul(x, 0x01000193) >>> 0;
+    }
+    return x.toString(16).padStart(8, "0");
+  });
+  const hex = h.join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 export const ahoraISO = (): string => new Date().toISOString();
 
 /** Filtra filas con borrado lógico. */

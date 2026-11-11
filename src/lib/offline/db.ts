@@ -26,6 +26,7 @@ import type {
 
 /** Tablas que se sincronizan, EN ORDEN DE DEPENDENCIAS (padres primero). */
 export const TABLAS_SYNC = [
+  "hogares",
   "unidades_negocio",
   "cuentas",
   "sobres",

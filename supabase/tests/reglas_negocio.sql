@@ -9,6 +9,7 @@ create function auth.uid() returns uuid language sql stable as $$ select nullif(
 do $$ begin create role authenticated; exception when duplicate_object then null; end $$;
 \i supabase/migrations/0001_esquema_inicial.sql
 \i supabase/migrations/0002_sincronizacion.sql
+\i supabase/migrations/0003_acceso.sql
 
 \set ON_ERROR_STOP 0
 \set H '''00000000-0000-0000-0000-000000000001'''
@@ -118,3 +119,31 @@ select ambito, listo_para_asignar/100 lpa, dolares_sin_convertir/100 usd from v_
 select nombre, ambito, disponible/100 disponible from v_sobres_disponible order by ambito, nombre;
 select orden, nombre, cubierto_mes/100 cubierto, falta_mes/100 falta from v_embudo_mes order by orden;
 select acreedor, saldo_actual/100 saldo, cuotas_restantes, interes_mensual_estimado/100 interes, prioridad from v_deudas_priorizadas order by prioridad;
+
+\echo '=== 9. Acceso: crear hogar e invitar'
+insert into auth.users values ('00000000-0000-0000-0000-00000000aaa1'), ('00000000-0000-0000-0000-00000000aaa2');
+\echo '--- (debe FALLAR) sin sesión'
+select crear_hogar('X', 'Y');
+set app.uid = '00000000-0000-0000-0000-00000000aaa1';
+select crear_hogar('Familia Nueva', 'Agustina') is not null as hogar_creado;
+\echo '--- (debe FALLAR) crear un segundo hogar'
+select crear_hogar('Otro', 'Agustina');
+\echo '--- (debe FALLAR) código inválido'
+set app.uid = '00000000-0000-0000-0000-00000000aaa2';
+select unirse_hogar('ZZZZZZ', 'Pareja');
+select unirse_hogar((select codigo_invitacion from hogares where nombre = 'Familia Nueva'), 'Pareja') =
+       (select id from hogares where nombre = 'Familia Nueva') as se_unio;
+select rol, count(*) from usuarios group by rol order by rol;
+
+\echo '=== 10. Aislamiento entre hogares (RLS) como usuario común'
+grant usage on schema public, auth to authenticated;
+grant select, insert, update, delete on all tables in schema public to authenticated;
+grant select on auth.users to authenticated;
+set role authenticated;
+set app.uid = '00000000-0000-0000-0000-00000000aaa2';
+select count(*) as cuentas_ajenas_visibles from cuentas;  -- el hogar de prueba 1 tiene 4: debe dar 0
+\echo '--- (debe FALLAR) escribir en el hogar de otro vía sincronizar_lote'
+select sincronizar_lote('[{"tabla":"unidades_negocio","fila":{"id":"20000000-0000-0000-0000-000000000001","hogar_id":"00000000-0000-0000-0000-000000000001","nombre":"Intrusa","tipo":"otro","activa":true,"creado_en":"2026-11-11T00:00:00Z","actualizado_en":"2026-11-11T00:00:00Z"}}]');
+select sincronizar_lote(('[{"tabla":"unidades_negocio","fila":{"id":"20000000-0000-0000-0000-000000000002","hogar_id":"' || mi_hogar() || '","nombre":"Pensionado","tipo":"pensionado","activa":true,"creado_en":"2026-11-11T00:00:00Z","actualizado_en":"2026-11-11T00:00:00Z"}}]')::jsonb) \gset x
+select nombre as unidad_propia_creada from unidades_negocio;
+reset role;
