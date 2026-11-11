@@ -109,7 +109,10 @@ erDiagram
   SOBRES ||--o{ TRANSACCIONES : "gasto imputado"
   SOBRES ||--o{ ASIGNACIONES : "pesos con trabajo"
   DEUDAS_PROPIAS ||--o{ TRANSACCIONES : "pagos"
-  CORRIDAS_EMBUDO ||--o{ TRANSACCIONES : "sueldo generado"
+  REGLAS_EMBUDO ||--o{ EMBUDO_DISTRIBUCIONES : "se llena con"
+  TRANSACCIONES ||--o{ EMBUDO_DISTRIBUCIONES : "ingreso repartido"
+  EMBUDO_DISTRIBUCIONES ||--|| ASIGNACIONES : genera
+  COTIZACIONES }o--|| HOGARES : "dólar del día"
 ```
 
 ### 4.2 Tablas
@@ -119,18 +122,20 @@ erDiagram
 | `hogares` | Tenant. Una familia = un hogar. | `moneda_base`, `estrategia_deuda` (avalancha / bola de nieve) |
 | `usuarios` | Perfil 1:1 con `auth.users`. | `rol`, `modo_preferido` (recuerda el toggle) |
 | `unidades_negocio` | Pensionado, Alimento, Cabañas. | `tipo`, `fecha_inicio` (inauguración de cabañas) |
-| `cuentas` | Billeteras reales: caja, banco, Mercado Pago, tarjeta. | **`ambito`**, `unidad_negocio_id` (solo empresa), `saldo_inicial` |
-| `transacciones` | Libro mayor. Signo: + entra, − sale. | `tipo`, `monto`, `sobre_id`, `grupo_id` (transferencias), `deuda_id`, `es_costo_fijo`, `dispositivo_id` |
+| `cuentas` | Billeteras reales: caja, banco, Mercado Pago, dólares en efectivo, tarjeta. | **`ambito`**, `moneda`, `compartida` (tarjetas usadas para empresa y familia), `dia_cierre` |
+| `cotizaciones` | Dólar blue del día: compra, venta y **promedio** (criterio dolarhoy.com). Automática + corrección manual. | `fecha`, `promedio`, `fuente` |
+| `transacciones` | Libro mayor. Signo: + entra, − sale. | `tipo`, `monto`, `sobre_id`, `grupo_id` (transferencias), `deuda_id`, `moneda_original`/`monto_original`/`tipo_cambio`, `dispositivo_id` |
 | `deudores` | Clientes de los negocios. | `tarifa_mensual`, `cantidad_unidades` (caballos), `dia_vencimiento`, `dias_gracia`, `telefono` |
 | `cargos` | Servicio prestado / venta fiada / reserva. Lo que el cliente **debe**. | `monto`, `fecha_vencimiento`, `probabilidad_cobro`, `estado` (automático), `reserva_desde/hasta` |
 | `cobros_aplicados` | Une un ingreso con uno o varios cargos. Permite pagos parciales y "te pago 3 meses juntos". | `monto` |
 | `sobres` | Presupuesto base cero + metas. Tipos: gasto mensual, costo fijo, fondo de emergencia, ahorro, inversión, impuestos, deuda. | `ambito`, `meta_monto`, `meta_mensual`, `prioridad` |
 | `asignaciones` | Cada vez que se le da un trabajo a un peso. | `sobre_id`, `mes`, `monto` (± para mover) |
-| `deudas_propias` | Lo que la familia/empresa debe. | `tasa_anual` (TNA), `saldo_inicial`, `pago_minimo`, `orden_manual` |
-| `config_embudo` | Parámetros del sueldo. | `sueldo_objetivo`, `sueldo_minimo`, `% impuestos`, `% reserva operativa`, `modo` (sugerir / forzar) |
-| `corridas_embudo` | Foto auditable de cada cálculo de sueldo. | ingresos, costos fijos, reservas, sugerido, transferido |
+| `deudas_propias` | Lo que la familia/empresa debe: préstamos, tarjetas, **compras en cuotas**, **plan de ahorro (Hilux)**. | `tipo`, `tasa_anual` (TNA), `pago_minimo` (= cuota), `cuotas_total`, `cuenta_tarjeta_id`, `sobre_id` |
+| `config_embudo` | Modo (**forzar** por defecto), sobre "Sueldo por transferir", cuenta familiar destino. | |
+| `reglas_embudo` | La cascada de prioridades: en qué orden se llena cada cosa con cada peso que entra. | `orden`, `destino` (sobre / sueldo), `tope_mensual`, `porcentaje_max` |
+| `embudo_distribuciones` | Cómo se repartió cada ingreso (auditable, no se reparte dos veces). | `transaccion_ingreso_id`, `regla_id`, `monto` |
 
-> **Nota de mapeo con lo pedido:** *Usuarios* → `usuarios`; *Transacciones* → `transacciones` (+ `cobros_aplicados`); *Unidades_Negocio* → `unidades_negocio`; *Deudores* → `deudores` + `cargos`; *Deudas_Propias* → `deudas_propias`. Se agregan `cuentas`, `sobres`, `asignaciones` y las del Embudo porque sin ellas no hay separación real ni presupuesto base cero.
+> **Nota de mapeo con lo pedido:** *Usuarios* → `usuarios`; *Transacciones* → `transacciones` (+ `cobros_aplicados`); *Unidades_Negocio* → `unidades_negocio`; *Deudores* → `deudores` + `cargos`; *Deudas_Propias* → `deudas_propias`. Se agregan `cuentas`, `cotizaciones`, `sobres`, `asignaciones` y las del Embudo porque sin ellas no hay separación real ni presupuesto base cero.
 
 ### 4.3 Reglas de negocio en la base de datos
 
@@ -142,6 +147,8 @@ erDiagram
 | `transferencia` solo dentro del mismo ámbito; `sueldo` solo empresa→familia; `aporte_capital` solo familia→empresa. | Ídem |
 | Estado del cargo (`pendiente`/`parcial`/`pagado`) se recalcula solo. | Trigger `cargo_recalcular_estado` |
 | No duplicar la cuota mensual de un cliente. | `unique (deudor_id, periodo, concepto)` |
+| Tarjeta compartida: cada gasto debe decir si es de empresa o familia (lo toma del sobre), y cada parte paga **su** parte del resumen. | Trigger `trx_validar_ambito` + regla de transferencias |
+| No repartir dos veces el mismo ingreso en el Embudo. | `unique (transaccion_ingreso_id, regla_id)` |
 | Cada hogar ve solo sus datos. | RLS con `mi_hogar()` en todas las tablas |
 
 Estas reglas fueron probadas contra Postgres 16 (ver `supabase/tests/reglas_negocio.sql`).
@@ -152,28 +159,41 @@ Estas reglas fueron probadas contra Postgres 16 (ver `supabase/tests/reglas_nego
 |-------|----------|
 | `v_saldo_cuentas` | ¿Cuánto hay realmente en cada cuenta? |
 | `v_cuentas_por_cobrar` | ¿Quién me debe, cuánto y hace cuánto? Semáforo: `al_dia`, `gracia`, `atrasado` (≤30 d), `moroso` (≤60 d), `critico`. |
-| `v_flujo_mes` | Por unidad de negocio: **esperado** (pendiente × probabilidad de cobro) vs. **cobrado real** vs. gastado. |
+| `v_flujo_mes` | Por unidad de negocio, todo en pesos: **esperado** (pendiente × probabilidad de cobro) vs. **cobrado real** vs. gastado (los dólares se convierten a la cotización usada o la vigente). |
 | `v_sobres_disponible` | Por sobre: asignado, gastado y disponible (con arrastre de meses anteriores, como YNAB). |
-| `v_listo_para_asignar` | Por ámbito: dinero real − dinero ya asignado. Si es > 0 hay pesos "sin trabajo". |
+| `v_tarjetas_por_ambito` | De cada tarjeta: cuánto debe la empresa y cuánto la familia. |
+| `v_listo_para_asignar` | Por ámbito: pesos reales − asignado a sobres − compras con tarjeta aún no pagadas. Si es > 0 hay pesos "sin trabajo"; si es < 0 se gastó plata que no había. Muestra aparte los dólares sin convertir. |
+| `v_embudo_mes` | Avance de cada regla del Embudo en el mes: cubierto y lo que falta (incluye "sueldo que la empresa todavía le debe a la familia"). |
 | `v_deudas_priorizadas` | Saldo actual, interés mensual estimado y orden de pago según avalancha (mayor tasa) o bola de nieve (menor saldo). |
 
 ---
 
 ## 5. Lógica de los módulos core (resumen)
 
-### 5.1 El Embudo (sueldo)
+### 5.1 El Embudo (sueldo FORZADO con prioridades)
+
+Decisión: **forzado**, pero sin vaciar el negocio. Cada peso que entra a la
+empresa recorre una lista ordenada de reglas; cada regla tiene un **tope
+mensual** y se llena antes de pasar a la siguiente:
 
 ```
-Ingresos cobrados del mes (empresa)
- − Costos fijos operativos (sobres tipo costo_fijo × meses_colchon_costos)
- − Reserva impuestos   (% configurable)
- − Reserva operativa   (% configurable, colchón para meses flacos)
- = Disponible para sueldo
-Sueldo sugerido = min(disponible, sueldo_objetivo)
+Entra un cobro de $500.000 ─▶ 1. Reponer alimento (stock)   tope 900.000  → toma 500.000 ✔ lleno parcial
+                              2. Sueldo mínimo               tope 600.000  → espera el próximo cobro
+Entra otro de $800.000     ─▶ 1. Reponer alimento            falta 400.000 → toma 400.000 ✔ lleno
+                              2. Sueldo mínimo               falta 600.000 → toma 400.000
+...
 ```
-- **Modo sugerir**: la app muestra un botón "Pagar sueldo" cuando el disponible supera el mínimo.
-- **Modo forzar**: cada ingreso dispara el cálculo y la transferencia se crea automáticamente hasta completar el sueldo objetivo del mes (sueldo "por goteo", ideal para ingresos aleatorios).
-- Si el disponible no alcanza el `sueldo_minimo`, la app lo marca en rojo: es la señal de que el negocio no está sosteniendo a la familia.
+
+- Las reglas las ordena la familia (arrastrando en la pantalla). El sueldo puede
+  partirse en dos: **sueldo mínimo** (alto en la lista) y **sueldo completo** (más abajo).
+- Opcional `porcentaje_max`: "de cada cobro, como mucho 40% para esta regla",
+  para que un solo cobro grande no se lo lleve todo una regla.
+- Lo que se asigna a una regla de sueldo va al sobre de empresa **"Sueldo por
+  transferir"**: queda bloqueado para el negocio *en el momento*, aunque la plata
+  física se mueva después. La app muestra "Pasá $X a la cuenta familiar" y al
+  confirmar se registra el `sueldo`.
+- Lo que falta de sueldo a fin de mes se muestra como **"la empresa le debe a la
+  familia $X"**: es la señal de que el negocio no está sosteniendo a la casa.
 
 ### 5.2 Presupuesto base cero
 
@@ -184,18 +204,20 @@ Sueldo sugerido = min(disponible, sueldo_objetivo)
 ### 5.3 Deudas
 
 - Interés mensual estimado = saldo × TNA / 12. (Para tarjetas argentinas se puede cargar TEA→TNA en la UI.)
+- Compras en cuotas y plan Hilux: cada mes la cuota se registra como `pago_deuda` sobre la tarjeta que la debita, imputada a su sobre. Así baja la deuda, sube el resumen de la tarjeta y se ve cuántas cuotas faltan.
 - El simulador (Fase 3) proyecta mes a mes con el "pago extra" disponible y compara avalancha vs. bola de nieve en meses y en intereses totales.
 
 ---
 
-## 6. Decisiones abiertas para validar contigo
+## 6. Decisiones tomadas
 
-1. **Moneda**: ¿manejan USD (ej. reservas de cabañas en dólares)? El esquema ya soporta cuentas en USD y `tipo_cambio`; "Listo para asignar" hoy solo suma la moneda base.
-2. **Tarjetas de crédito**: modeladas como cuenta con saldo negativo + deuda. En Fase 3 propongo el patrón YNAB (al gastar con tarjeta, el dinero se mueve del sobre al sobre "Pago tarjeta").
-3. **Facturación / AFIP**: fuera de alcance por ahora; el campo `pct_reserva_impuestos` reserva el dinero.
-4. **Hijos**: no se modelan como usuarios; se representan con grupos de sobres ("Hijo mayor", "Bebé").
-
----
+| Tema | Decisión |
+|------|----------|
+| **Dólares** | Cuentas en USD (ej. "Dólares Alimento"). Un cobro en dólares entra a esa cuenta; al venderlos se registra una conversión USD→ARS con el **promedio blue** (compra+venta)/2, criterio dolarhoy.com. Si cambian al instante, se carga directo en pesos guardando `monto_original` en USD. Los dólares **no se reparten** en sobres hasta convertirlos; se muestran aparte. La cotización la trae una Edge Function una vez por día (desde una API pública con los mismos valores que dolarhoy.com, ya que el sitio no tiene API); sin señal se usa la última, y se puede corregir a mano. |
+| **Tarjetas** | Una tarjeta puede ser **compartida**. Cada gasto se marca empresa o familia (lo define el sobre: "Nafta y peajes" es de empresa, "Súper" es de familia). Al pagar el resumen, cada lado paga lo suyo; la familia no puede pagar la parte de la empresa ni al revés. Las compras en cuotas (materiales de cabañas) y el plan Hilux son deudas con cuotas debitadas en la tarjeta. Al gastar con tarjeta, la plata queda **apartada** en la cuenta para pagar el resumen (el método "cada peso tiene un trabajo"). |
+| **Sueldo** | **Forzado** con cascada de prioridades y topes mensuales (ver 5.1). |
+| Facturación / AFIP | Fuera de alcance por ahora; se cubre con un sobre de impuestos dentro del Embudo. |
+| Hijos | No son usuarios; se representan con grupos de sobres ("Hijo mayor", "Bebé"). |
 
 ## 7. Estructura del repositorio (propuesta)
 

@@ -31,8 +31,13 @@ create type tipo_transaccion  as enum (
   'ajuste'            -- conciliación de saldo
 );
 create type estado_cargo      as enum ('pendiente', 'parcial', 'pagado', 'incobrable', 'anulado');
-create type tipo_sobre        as enum ('gasto_mensual', 'costo_fijo', 'fondo_emergencia', 'ahorro', 'inversion', 'impuestos', 'deuda');
+create type tipo_sobre        as enum (
+  'gasto_mensual', 'costo_fijo', 'fondo_emergencia', 'ahorro', 'inversion', 'impuestos', 'deuda',
+  'sueldo'            -- sobre de EMPRESA "Sueldo por transferir" que llena el Embudo
+);
 create type estrategia_deuda  as enum ('avalancha', 'bola_de_nieve');
+create type tipo_deuda        as enum ('prestamo', 'tarjeta', 'compra_en_cuotas', 'plan_ahorro', 'proveedor', 'otro');
+create type destino_regla     as enum ('sobre', 'sueldo');
 
 -- -----------------------------------------------------------------------------
 -- Utilidades
@@ -93,7 +98,12 @@ create index on unidades_negocio (hogar_id);
 
 -- -----------------------------------------------------------------------------
 -- 3. Cuentas (billeteras). Cada cuenta pertenece a UN ámbito. Es la base de la
---    separación estricta: no existe una cuenta "mixta".
+--    separación estricta.
+--    Única excepción: TARJETA DE CRÉDITO COMPARTIDA (compartida = true). En la
+--    realidad una misma Visa paga nafta del reparto y el súper de la casa. La
+--    cuenta guarda el ámbito del titular, pero CADA movimiento toma el ámbito de
+--    su sobre, y el resumen se paga por partes: la empresa paga lo suyo y la
+--    familia lo suyo (ver v_tarjetas_por_ambito).
 -- -----------------------------------------------------------------------------
 create table cuentas (
   id                 uuid primary key,
@@ -104,13 +114,38 @@ create table cuentas (
   tipo               tipo_cuenta not null,
   moneda             moneda not null default 'ARS',
   saldo_inicial      bigint not null default 0,
+  compartida         boolean not null default false,
+  dia_cierre         smallint check (dia_cierre between 1 and 31),       -- tarjetas
+  dia_vencimiento    smallint check (dia_vencimiento between 1 and 31),  -- tarjetas
   archivada          boolean not null default false,
   creado_en          timestamptz not null default now(),
   actualizado_en     timestamptz not null default now(),
   eliminado_en       timestamptz,
-  constraint cuenta_familia_sin_unidad check (ambito = 'empresa' or unidad_negocio_id is null)
+  constraint cuenta_familia_sin_unidad check (ambito = 'empresa' or unidad_negocio_id is null),
+  constraint solo_tarjetas_compartidas check (not compartida or tipo = 'tarjeta_credito')
 );
 create index on cuentas (hogar_id, ambito);
+
+-- -----------------------------------------------------------------------------
+-- 3b. Cotizaciones del dólar
+--     Fuente por defecto: dólar blue, valor PROMEDIO = (compra + venta) / 2, el
+--     mismo criterio que usan con dolarhoy.com. Se guarda una por día (la carga
+--     una Edge Function); el usuario puede pisarla a mano para su hogar
+--     (hogar_id no nulo) si cambió a otro valor. Offline se usa la última guardada.
+-- -----------------------------------------------------------------------------
+create table cotizaciones (
+  id                 uuid primary key default gen_random_uuid(),
+  hogar_id           uuid references hogares(id) on delete cascade,  -- null = cotización general
+  fecha              date not null,
+  tipo               text not null default 'blue',
+  compra             numeric(14,4) not null check (compra > 0),
+  venta              numeric(14,4) not null check (venta > 0),
+  promedio           numeric(14,4) generated always as (round((compra + venta) / 2, 4)) stored,
+  fuente             text not null default 'automatica',   -- 'automatica' | 'manual'
+  creado_en          timestamptz not null default now(),
+  actualizado_en     timestamptz not null default now(),
+  constraint cotizacion_unica unique nulls not distinct (hogar_id, fecha, tipo)
+);
 
 -- -----------------------------------------------------------------------------
 -- 4. Sobres (Presupuesto Base Cero estilo YNAB + metas + fondo de emergencia)
@@ -183,6 +218,7 @@ create table cargos (
   deudor_id          uuid not null references deudores(id),
   concepto           text not null,             -- "Pensión noviembre - 2 caballos"
   periodo            date,                      -- mes de servicio (cargos recurrentes)
+  moneda             moneda not null default 'ARS',  -- cabañas pueden cobrar en USD
   monto              bigint not null check (monto > 0),
   fecha_emision      date not null default current_date,
   fecha_vencimiento  date not null,
@@ -209,15 +245,19 @@ create table deudas_propias (
   hogar_id           uuid not null references hogares(id) on delete cascade,
   ambito             ambito not null,
   unidad_negocio_id  uuid references unidades_negocio(id),
-  acreedor           text not null,             -- "Tarjeta Visa", "Préstamo banco", "Forrajería X"
+  tipo               tipo_deuda not null default 'otro',
+  acreedor           text not null,             -- "Plan Toyota Hilux", "Visa - materiales cabañas"
   descripcion        text,
   moneda             moneda not null default 'ARS',
   monto_original     bigint not null check (monto_original > 0),
   saldo_inicial      bigint not null check (saldo_inicial >= 0),  -- saldo al momento de cargarla
-  tasa_anual         numeric(7,4) not null default 0,  -- TNA en %, ej 85.5000
-  pago_minimo        bigint not null default 0,
+  tasa_anual         numeric(7,4) not null default 0,  -- TNA en %, ej 85.5000 (0 = cuotas sin interés)
+  pago_minimo        bigint not null default 0,  -- en deudas en cuotas = valor de la cuota
+  cuotas_total       smallint,                   -- compras en cuotas / plan de ahorro
+  cuotas_pagadas_al_cargar smallint not null default 0,
   dia_vencimiento    smallint check (dia_vencimiento between 1 and 31),
-  cuenta_tarjeta_id  uuid references cuentas(id),       -- si es tarjeta de crédito
+  cuenta_tarjeta_id  uuid references cuentas(id),       -- tarjeta por la que se debita la cuota
+  sobre_id           uuid references sobres(id),        -- sobre donde se presupuesta la cuota
   orden_manual       smallint,                          -- override de prioridad
   cancelada          boolean not null default false,
   creado_en          timestamptz not null default now(),
@@ -227,36 +267,45 @@ create table deudas_propias (
 create index on deudas_propias (hogar_id, ambito);
 
 -- -----------------------------------------------------------------------------
--- 7. Corridas del Embudo (asignación de sueldo)
+-- 7. El Embudo (sueldo FORZADO por cascada de prioridades)
+--    Cada peso que entra a la empresa recorre las reglas en orden. Cada regla
+--    tiene un tope mensual; cuando se llena, el resto cae a la siguiente.
+--    Ej:  1. Alimento para reponer stock (sobre)   tope $900.000
+--         2. Sueldo mínimo            (sueldo)     tope $600.000
+--         3. Plan Hilux + seguros     (sobre)      tope $450.000
+--         4. Sueldo completo          (sueldo)     tope $500.000  (el resto del objetivo)
+--         5. Impuestos / reserva      (sobre)      tope $200.000
+--    Lo que sobra queda "Listo para asignar" en la empresa.
+--    El dinero de las reglas 'sueldo' va al sobre de empresa "Sueldo por
+--    transferir": queda bloqueado para el negocio aunque físicamente no se haya
+--    movido todavía. Al confirmar la transferencia real se crea el 'sueldo'.
 -- -----------------------------------------------------------------------------
 create table config_embudo (
   hogar_id               uuid primary key references hogares(id) on delete cascade,
-  sueldo_objetivo        bigint not null default 0,   -- lo que la familia necesita por mes
-  sueldo_minimo          bigint not null default 0,   -- piso "forzado"
-  pct_reserva_impuestos  numeric(5,2) not null default 0,
-  pct_reserva_operativa  numeric(5,2) not null default 10,  -- colchón del negocio
-  meses_colchon_costos   numeric(4,1) not null default 1,   -- costos fijos a cubrir antes de pagar sueldo
-  modo                   text not null default 'sugerir' check (modo in ('sugerir', 'forzar')),
+  modo                   text not null default 'forzar' check (modo in ('sugerir', 'forzar')),
+  sobre_sueldo_id        uuid references sobres(id),   -- sobre empresa tipo 'sueldo'
+  cuenta_familia_id      uuid references cuentas(id),  -- destino habitual del sueldo
   actualizado_en         timestamptz not null default now()
 );
 
-create table corridas_embudo (
-  id                   uuid primary key,
-  hogar_id             uuid not null references hogares(id) on delete cascade,
-  periodo              date not null check (periodo = date_trunc('month', periodo)::date),
-  ingresos_cobrados    bigint not null,   -- foto del cálculo al momento de ejecutar
-  costos_fijos         bigint not null,
-  reserva_impuestos    bigint not null,
-  reserva_operativa    bigint not null,
-  disponible_sueldo    bigint not null,
-  sueldo_sugerido      bigint not null,
-  sueldo_transferido   bigint not null default 0,
-  ejecutado_por        uuid references usuarios(id),
-  creado_en            timestamptz not null default now(),
-  actualizado_en       timestamptz not null default now(),
-  eliminado_en         timestamptz
+create table reglas_embudo (
+  id                 uuid primary key,
+  hogar_id           uuid not null references hogares(id) on delete cascade,
+  orden              smallint not null,
+  nombre             text not null,
+  destino            destino_regla not null,
+  sobre_id           uuid references sobres(id),       -- destino = 'sobre' (sobre de EMPRESA)
+  tope_mensual       bigint not null check (tope_mensual > 0),
+  porcentaje_max     numeric(5,2) check (porcentaje_max > 0 and porcentaje_max <= 100),
+                     -- opcional: toma como máximo este % de cada ingreso (para no vaciar todo en un solo cobro)
+  unidad_negocio_id  uuid references unidades_negocio(id),  -- null = aplica a ingresos de todas las unidades
+  activa             boolean not null default true,
+  creado_en          timestamptz not null default now(),
+  actualizado_en     timestamptz not null default now(),
+  eliminado_en       timestamptz,
+  constraint regla_sobre_requiere_sobre check (destino <> 'sobre' or sobre_id is not null)
 );
-create index on corridas_embudo (hogar_id, periodo);
+create index on reglas_embudo (hogar_id, orden);
 
 -- -----------------------------------------------------------------------------
 -- 8. Transacciones (libro mayor, append-mostly)
@@ -277,8 +326,10 @@ create table transacciones (
   es_costo_fijo      boolean not null default false,
   grupo_id           uuid,                          -- enlaza las 2 patas de una transferencia
   deuda_id           uuid references deudas_propias(id),
-  corrida_embudo_id  uuid references corridas_embudo(id),
-  tipo_cambio        numeric(14,4),                 -- si hubo conversión ARS/USD
+  -- Dólares: "me pagaron US$ 300 y los pasé a pesos al promedio del día"
+  moneda_original    moneda,                        -- si se cobró/pagó en otra moneda que la de la cuenta
+  monto_original     bigint,
+  tipo_cambio        numeric(14,4),                 -- cotización usada (también en conversiones USD->ARS)
   creado_por         uuid references usuarios(id),
   dispositivo_id     text,                          -- trazabilidad de la sincronización
   creado_en          timestamptz not null default now(),  -- hora del dispositivo
@@ -287,7 +338,10 @@ create table transacciones (
   eliminado_en       timestamptz,
   constraint pago_deuda_requiere_deuda check (tipo <> 'pago_deuda' or deuda_id is not null),
   constraint transferencia_requiere_grupo check (
-    tipo not in ('transferencia', 'sueldo', 'aporte_capital') or grupo_id is not null)
+    tipo not in ('transferencia', 'sueldo', 'aporte_capital') or grupo_id is not null),
+  constraint moneda_original_completa check (
+    (moneda_original is null) = (monto_original is null) and
+    (moneda_original is null or tipo_cambio is not null))
 );
 create index on transacciones (hogar_id, ambito, fecha desc);
 create index on transacciones (cuenta_id);
@@ -309,29 +363,58 @@ create table cobros_aplicados (
 );
 create index on cobros_aplicados (cargo_id);
 
+-- Cómo se repartió cada ingreso de la empresa en el Embudo (auditable).
+-- Cada fila genera una asignación al sobre de la regla (o al sobre "Sueldo por transferir").
+create table embudo_distribuciones (
+  id                     uuid primary key,
+  hogar_id               uuid not null references hogares(id) on delete cascade,
+  transaccion_ingreso_id uuid not null references transacciones(id),
+  regla_id               uuid not null references reglas_embudo(id),
+  mes                    date not null check (mes = date_trunc('month', mes)::date),
+  monto                  bigint not null check (monto > 0),
+  asignacion_id          uuid references asignaciones(id),
+  creado_en              timestamptz not null default now(),
+  actualizado_en         timestamptz not null default now(),
+  eliminado_en           timestamptz,
+  unique (transaccion_ingreso_id, regla_id)   -- un ingreso no se reparte dos veces
+);
+create index on embudo_distribuciones (hogar_id, mes);
+
 -- =============================================================================
 -- REGLAS DE NEGOCIO (triggers)
 -- =============================================================================
 
 -- R1. La transacción hereda ámbito y unidad de su cuenta; y el sobre debe ser del mismo ámbito.
+--     Tarjeta compartida: el ámbito lo define el sobre del gasto (o el que
+--     indique el cliente en los pagos del resumen).
 create or replace function trx_validar_ambito() returns trigger
 language plpgsql as $$
 declare
   c cuentas%rowtype;
   s_ambito ambito;
+  s_unidad uuid;
 begin
   select * into c from cuentas where id = new.cuenta_id;
   if c.hogar_id <> new.hogar_id then
     raise exception 'La cuenta no pertenece al hogar';
   end if;
-  new.ambito := c.ambito;
-  new.unidad_negocio_id := coalesce(new.unidad_negocio_id, c.unidad_negocio_id);
-
   if new.sobre_id is not null then
-    select ambito into s_ambito from sobres where id = new.sobre_id;
-    if s_ambito <> c.ambito then
-      raise exception 'Separación de fondos: el sobre (%) y la cuenta (%) son de ámbitos distintos', s_ambito, c.ambito;
+    select ambito, unidad_negocio_id into s_ambito, s_unidad from sobres where id = new.sobre_id;
+  end if;
+  new.unidad_negocio_id := coalesce(new.unidad_negocio_id, s_unidad);
+
+  if c.compartida then
+    new.ambito := coalesce(s_ambito, new.ambito);
+    if new.ambito is null then
+      raise exception 'Tarjeta compartida: indicá si el movimiento es de EMPRESA o de FAMILIA';
     end if;
+  else
+    new.ambito := c.ambito;
+    new.unidad_negocio_id := coalesce(new.unidad_negocio_id, c.unidad_negocio_id);
+  end if;
+
+  if s_ambito is not null and s_ambito <> new.ambito then
+    raise exception 'Separación de fondos: el sobre (%) y la cuenta (%) son de ámbitos distintos', s_ambito, new.ambito;
   end if;
   return new;
 end $$;
@@ -414,8 +497,8 @@ do $$
 declare t text;
 begin
   foreach t in array array['hogares','usuarios','unidades_negocio','cuentas','sobres',
-    'asignaciones','deudores','cargos','deudas_propias','corridas_embudo',
-    'transacciones','cobros_aplicados','config_embudo']
+    'asignaciones','deudores','cargos','deudas_propias','reglas_embudo','embudo_distribuciones',
+    'transacciones','cobros_aplicados','config_embudo','cotizaciones']
   loop
     execute format('create trigger %I_actualizado before update on %I
                     for each row execute function tocar_actualizado_en()', t, t);
@@ -425,6 +508,16 @@ end $$;
 -- =============================================================================
 -- VISTAS (lógica de lectura que alimenta el Dashboard)
 -- =============================================================================
+
+-- Cotización vigente del hogar: la manual del hogar si existe para la fecha más
+-- reciente; si no, la automática. Promedio (compra+venta)/2.
+create or replace function cotizacion_vigente(p_hogar uuid, p_fecha date default current_date)
+returns numeric language sql stable as $$
+  select promedio from cotizaciones
+   where (hogar_id is null or hogar_id = p_hogar) and tipo = 'blue' and fecha <= p_fecha
+   order by fecha desc, hogar_id nulls last
+   limit 1
+$$;
 
 -- Saldo real por cuenta
 create view v_saldo_cuentas with (security_invoker = true) as
@@ -438,7 +531,7 @@ select c.id, c.hogar_id, c.ambito, c.unidad_negocio_id, c.nombre, c.tipo, c.mone
 -- Cuentas por cobrar con antigüedad (semáforo de morosidad)
 create view v_cuentas_por_cobrar with (security_invoker = true) as
 select cg.id as cargo_id, cg.hogar_id, cg.unidad_negocio_id, cg.deudor_id, d.nombre as deudor,
-       d.telefono, cg.concepto, cg.monto, cg.fecha_vencimiento, cg.probabilidad_cobro,
+       d.telefono, cg.concepto, cg.moneda, cg.monto, cg.fecha_vencimiento, cg.probabilidad_cobro,
        coalesce(p.pagado, 0)::bigint              as pagado,
        (cg.monto - coalesce(p.pagado, 0))::bigint as saldo,
        greatest(current_date - cg.fecha_vencimiento, 0) as dias_atraso,
@@ -466,19 +559,27 @@ with mes as (select date_trunc('month', current_date)::date as ini,
                     (date_trunc('month', current_date) + interval '1 month - 1 day')::date as fin)
 select u.hogar_id, u.id as unidad_negocio_id, u.nombre,
        -- Esperado = saldo pendiente que vence este mes (o vencido), ponderado por probabilidad
-       coalesce((select sum(cxc.saldo * cxc.probabilidad_cobro / 100)
+       -- Todo expresado en PESOS: lo cobrado en dólares se convierte con la
+       -- cotización usada en el momento (tipo_cambio) o la vigente.
+       coalesce((select sum(cxc.saldo * cxc.probabilidad_cobro / 100
+                            * case when cxc.moneda = 'USD' then coalesce(cot.v, 0) else 1 end)
                    from v_cuentas_por_cobrar cxc, mes
                   where cxc.unidad_negocio_id = u.id and cxc.fecha_vencimiento <= mes.fin), 0)::bigint
          as esperado_pendiente,
-       coalesce((select sum(t.monto) from transacciones t, mes
+       coalesce((select sum(t.monto * case when c.moneda = 'USD'
+                                           then coalesce(t.tipo_cambio, cot.v, 0) else 1 end)
+                   from transacciones t join cuentas c on c.id = t.cuenta_id, mes
                   where t.unidad_negocio_id = u.id and t.eliminado_en is null
                     and t.tipo = 'ingreso' and t.fecha between mes.ini and mes.fin), 0)::bigint
          as cobrado_real,
-       coalesce((select -sum(t.monto) from transacciones t, mes
+       coalesce((select -sum(t.monto * case when c.moneda = 'USD'
+                                            then coalesce(t.tipo_cambio, cot.v, 0) else 1 end)
+                   from transacciones t join cuentas c on c.id = t.cuenta_id, mes
                   where t.unidad_negocio_id = u.id and t.eliminado_en is null
-                    and t.tipo = 'gasto' and t.fecha between mes.ini and mes.fin), 0)::bigint
+                    and t.tipo in ('gasto', 'pago_deuda') and t.fecha between mes.ini and mes.fin), 0)::bigint
          as gastado_real
   from unidades_negocio u
+  cross join lateral (select cotizacion_vigente(u.hogar_id) as v) cot
  where u.eliminado_en is null;
 
 -- Disponible por sobre (YNAB: asignado acumulado + actividad acumulada; arrastra saldo)
@@ -503,23 +604,66 @@ select s.id as sobre_id, s.hogar_id, s.ambito, s.nombre, s.tipo, s.grupo,
      group by sobre_id) t on t.sobre_id = s.id
  where s.eliminado_en is null;
 
--- "Listo para asignar" por ámbito: dinero REAL en cuentas menos lo ya asignado
--- a sobres (neto de lo gastado). Nunca incluye cuentas por cobrar.
+-- Deuda de tarjetas separada por ámbito: "del resumen de la Visa, $X es de la
+-- empresa y $Y de la familia". saldo_inicial se atribuye al ámbito del titular.
+create view v_tarjetas_por_ambito with (security_invoker = true) as
+select c.id as cuenta_id, c.hogar_id, c.nombre, c.compartida, amb.ambito,
+       (-(case when amb.ambito = c.ambito then c.saldo_inicial else 0 end
+          + coalesce((select sum(t.monto) from transacciones t
+                       where t.cuenta_id = c.id and t.ambito = amb.ambito
+                         and t.eliminado_en is null), 0)))::bigint as deuda,
+       -- Compras hechas DESDE que se usa la app y aún no pagadas: esa plata
+       -- ya está "apartada" en las cuentas para pagar el resumen.
+       greatest(-coalesce((select sum(t.monto) from transacciones t
+                            where t.cuenta_id = c.id and t.ambito = amb.ambito
+                              and t.eliminado_en is null), 0), 0)::bigint as compras_a_pagar
+  from cuentas c
+ cross join (values ('empresa'::ambito), ('familia'::ambito)) amb(ambito)
+ where c.tipo = 'tarjeta_credito' and c.eliminado_en is null
+   and (c.compartida or amb.ambito = c.ambito);
+
+-- "Listo para asignar" por ámbito: dinero REAL en cuentas en pesos
+--   − lo ya asignado a sobres (neto de lo gastado)
+--   − lo gastado con tarjeta que todavía hay que pagar (ya salió de un sobre,
+--     pero el efectivo sigue en la cuenta hasta pagar el resumen).
+-- Nunca incluye cuentas por cobrar. Los dólares no se reparten hasta convertirlos.
 create view v_listo_para_asignar with (security_invoker = true) as
 select h.id as hogar_id, amb.ambito,
        (coalesce((select sum(saldo) from v_saldo_cuentas sc
                   where sc.hogar_id = h.id and sc.ambito = amb.ambito
                     and sc.tipo <> 'tarjeta_credito' and sc.moneda = h.moneda_base), 0)
-     - coalesce((select sum(disponible) from v_sobres_disponible sd
-                  where sd.hogar_id = h.id and sd.ambito = amb.ambito), 0))::bigint
-       as listo_para_asignar
+     -- Un sobre pasado de gasto (negativo) NO libera plata: si se pasó con
+     -- tarjeta, esa deuda ya se descuenta abajo; si fue en efectivo, ya salió de la cuenta.
+     - coalesce((select sum(greatest(disponible, 0)) from v_sobres_disponible sd
+                  where sd.hogar_id = h.id and sd.ambito = amb.ambito), 0)
+     - coalesce((select sum(compras_a_pagar) from v_tarjetas_por_ambito tc
+                  where tc.hogar_id = h.id and tc.ambito = amb.ambito), 0))::bigint
+       as listo_para_asignar,
+       coalesce((select sum(saldo) from v_saldo_cuentas sc
+                  where sc.hogar_id = h.id and sc.ambito = amb.ambito
+                    and sc.tipo <> 'tarjeta_credito' and sc.moneda = 'USD'), 0)::bigint
+       as dolares_sin_convertir
   from hogares h
  cross join (values ('empresa'::ambito), ('familia'::ambito)) amb(ambito);
+
+-- Avance del Embudo en el mes: cuánto se llenó cada regla y cuánto falta.
+-- Para las reglas de sueldo: "la empresa todavía le debe $X a la familia".
+create view v_embudo_mes with (security_invoker = true) as
+select r.id as regla_id, r.hogar_id, r.orden, r.nombre, r.destino, r.sobre_id, r.tope_mensual,
+       coalesce(d.cubierto, 0)::bigint                               as cubierto_mes,
+       greatest(r.tope_mensual - coalesce(d.cubierto, 0), 0)::bigint as falta_mes
+  from reglas_embudo r
+  left join (
+    select regla_id, sum(monto) as cubierto from embudo_distribuciones
+     where eliminado_en is null and mes = date_trunc('month', current_date)::date
+     group by regla_id) d on d.regla_id = r.id
+ where r.activa and r.eliminado_en is null;
 
 -- Deudas priorizadas según la estrategia del hogar
 create view v_deudas_priorizadas with (security_invoker = true) as
 select d.*, coalesce(p.pagado, 0) as pagado,
        (d.saldo_inicial - coalesce(p.pagado, 0))::bigint as saldo_actual,
+       (d.cuotas_total - d.cuotas_pagadas_al_cargar - coalesce(p.cuotas, 0))::smallint as cuotas_restantes,
        round((d.saldo_inicial - coalesce(p.pagado, 0)) * d.tasa_anual / 100 / 12)::bigint as interes_mensual_estimado,
        row_number() over (
          partition by d.hogar_id
@@ -531,7 +675,7 @@ select d.*, coalesce(p.pagado, 0) as pagado,
   from deudas_propias d
   join hogares h on h.id = d.hogar_id
   left join lateral (
-    select (-sum(t.monto))::bigint as pagado from transacciones t
+    select (-sum(t.monto))::bigint as pagado, count(*) as cuotas from transacciones t
      where t.deuda_id = d.id and t.eliminado_en is null and t.tipo = 'pago_deuda'
   ) p on true
  where d.eliminado_en is null and not d.cancelada;
@@ -550,10 +694,18 @@ do $$
 declare t text;
 begin
   foreach t in array array['unidades_negocio','cuentas','sobres','asignaciones','deudores',
-    'cargos','deudas_propias','config_embudo','corridas_embudo','transacciones','cobros_aplicados']
+    'cargos','deudas_propias','config_embudo','reglas_embudo','embudo_distribuciones',
+    'transacciones','cobros_aplicados']
   loop
     execute format('alter table %I enable row level security', t);
     execute format('create policy %I_hogar on %I for all
                     using (hogar_id = mi_hogar()) with check (hogar_id = mi_hogar())', t, t);
   end loop;
 end $$;
+
+-- Cotizaciones: todos leen las generales y las de su hogar; solo se cargan las del hogar.
+alter table cotizaciones enable row level security;
+create policy cotizaciones_lectura on cotizaciones for select
+  using (hogar_id is null or hogar_id = mi_hogar());
+create policy cotizaciones_manual on cotizaciones for insert
+  with check (hogar_id = mi_hogar());
