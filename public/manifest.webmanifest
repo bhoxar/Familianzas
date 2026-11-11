@@ -1,0 +1,11 @@
+{
+  "name": "Familianzas",
+  "short_name": "Familianzas",
+  "description": "Negocio y familia, cada peso en su lugar.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f7f8",
+  "theme_color": "#0f5e75",
+  "lang": "es-AR",
+  "icons": []
+}

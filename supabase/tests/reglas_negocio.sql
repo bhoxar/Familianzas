@@ -6,7 +6,9 @@
 -- Stub mínimo del esquema auth de Supabase
 create schema auth; create table auth.users(id uuid primary key);
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('app.uid', true),'')::uuid $$;
+do $$ begin create role authenticated; exception when duplicate_object then null; end $$;
 \i supabase/migrations/0001_esquema_inicial.sql
+\i supabase/migrations/0002_sincronizacion.sql
 
 \set ON_ERROR_STOP 0
 \set H '''00000000-0000-0000-0000-000000000001'''
