@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/*
+ * Tema por ámbito: el atributo data-ambito en <html> recolorea TODA la app.
+ * Negocio = azul petróleo · Familia = verde.
+ */
+:root {
+  --marca: #0f5e75;
+  --marca-suave: #e0f0f4;
+  --fondo: #f6f7f8;
+  --superficie: #ffffff;
+  --texto: #14181c;
+  --texto-suave: #5b6670;
+  --borde: #e2e6ea;
+  --rojo: #c0262d;
+  --rojo-suave: #fdecec;
+  --naranja: #b45309;
+  --naranja-suave: #fff4e5;
+  --verde: #15803d;
+}
+html[data-ambito="familia"] {
+  --marca: #2f7d3a;
+  --marca-suave: #e6f4e8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fondo: #0f1316;
+    --superficie: #171c20;
+    --texto: #eef1f3;
+    --texto-suave: #9aa6b0;
+    --borde: #2a3238;
+    --marca-suave: #12323b;
+    --rojo-suave: #3a1416;
+    --naranja-suave: #3a2a12;
+  }
+  html[data-ambito="familia"] { --marca-suave: #173320; }
+}
+
+@theme inline {
+  --color-marca: var(--marca);
+  --color-marca-suave: var(--marca-suave);
+  --color-fondo: var(--fondo);
+  --color-superficie: var(--superficie);
+  --color-texto: var(--texto);
+  --color-suave: var(--texto-suave);
+  --color-borde: var(--borde);
+  --color-rojo: var(--rojo);
+  --color-rojo-suave: var(--rojo-suave);
+  --color-naranja: var(--naranja);
+  --color-naranja-suave: var(--naranja-suave);
+  --color-ok: var(--verde);
+}
+
+html, body {
+  background: var(--fondo);
+  color: var(--texto);
+  -webkit-tap-highlight-color: transparent;
+}
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+}
+.cifra { font-variant-numeric: tabular-nums; }
+html { transition: background-color 200ms; }
+
+.campo {
+  width: 100%;
+  min-height: 3rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--borde);
+  background: var(--superficie);
+  color: var(--texto);
+  padding: 0 0.75rem;
+  font-size: 1rem;
+}
+.campo:focus { outline: 2px solid var(--marca); outline-offset: 1px; }
