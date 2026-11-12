@@ -90,6 +90,18 @@ export async function enviarEnlaceAcceso(email: string) {
   if (error) throw new Error(error.message);
 }
 
+/**
+ * Entrar con el código de 6 dígitos del mail (alternativa al enlace).
+ * Sirve cuando el mail se abre en otro navegador o con la app instalada
+ * (en iPhone el enlace abre Safari, no la app de la pantalla de inicio).
+ */
+export async function verificarCodigo(email: string, codigo: string) {
+  const sb = supabase();
+  if (!sb) throw new Error("Supabase no está configurado");
+  const { error } = await sb.auth.verifyOtp({ email, token: codigo.trim(), type: "email" });
+  if (error) throw new Error("El código no es válido o venció. Pedí uno nuevo.");
+}
+
 export async function cerrarSesion(base: FamilianzasDB = db()) {
   const pendientes = await base.outbox.count();
   if (pendientes > 0) {

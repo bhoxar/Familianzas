@@ -25,12 +25,25 @@ Hay dos formas de usar Familianzas.
 
 ## 2. Configurar el acceso por email
 
-En **Authentication → URL Configuration**:
+> ⚠️ Si se omite este paso, el enlace del mail lleva a `localhost:3000` y en el
+> celular aparece "No se puede acceder a este sitio".
 
-- **Site URL**: la dirección donde quede publicada la app (paso 3), por ejemplo `https://familianzas.vercel.app`.
-- **Redirect URLs**: agregar esa misma dirección.
-
-Opcional: en **Authentication → Email Templates** se puede traducir el email del enlace al español.
+1. En **Authentication → URL Configuration**:
+   - **Site URL**: la dirección de la app publicada (paso 3), por ejemplo `https://familianzas.vercel.app`. Reemplaza al `http://localhost:3000` que viene por defecto.
+   - **Redirect URLs** → **Add URL**: esa misma dirección seguida de `/**`, por ejemplo `https://familianzas.vercel.app/**`.
+   - **Save**.
+2. En **Authentication → Email Templates → Magic Link**, para que el mail traiga también un **código de 6 dígitos** (necesario en iPhone con la app instalada, y útil si el mail se abre en otro navegador):
+   - **Subject**: `Tu código para entrar a Familianzas`
+   - **Body**:
+     ```html
+     <h2>Familianzas</h2>
+     <p>Tu código para entrar es:</p>
+     <p style="font-size:28px;font-weight:bold;letter-spacing:6px">{{ .Token }}</p>
+     <p>Escribilo en la app. O tocá este enlace desde el mismo teléfono:</p>
+     <p><a href="{{ .ConfirmationURL }}">Entrar a Familianzas</a></p>
+     ```
+   - **Save**.
+3. Cada vez que se cambia esta configuración, hay que pedir un código nuevo: los mails anteriores ya no sirven.
 
 ## 3. Publicar la app (Vercel)
 
@@ -46,7 +59,7 @@ Opcional: en **Authentication → Email Templates** se puede traducir el email d
 
 1. Abrir la dirección publicada en el celular (Chrome en Android, Safari en iPhone).
 2. Menú del navegador → **Agregar a la pantalla de inicio**. Queda como una app más.
-3. **Primera persona:** entrar con su email, tocar el enlace que llega y elegir **Crear hogar**. Después completar la configuración guiada.
+3. **Primera persona:** entrar con su email, escribir el código que llega (o tocar el enlace) y elegir **Crear hogar**. Después completar la configuración guiada.
 4. **Segunda persona:** en el teléfono de la primera, abrir **Más → Usuarios del hogar** y copiar el código de 6 letras. Entrar con su propio email, elegir **Tengo un código** y escribirlo.
 
 > Abrir la app al menos una vez **con señal** después de instalarla: en ese
